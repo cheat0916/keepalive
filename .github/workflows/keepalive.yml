@@ -1,0 +1,97 @@
+name: Keep Multiple Apps Alive with Smart Alerts & Daily Report
+
+on:
+  schedule:
+    # 每10分钟执行一次保活
+    - cron: "*/10 * * * *"
+    # 每天早上 08:00 UTC+8 发送健康简报
+    - cron: "0 0 * * *"   # UTC 0 点 = 北京时间 08:00
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.6154852677:AAEu7a7zBoWghrybfjAv9gupBFC1TLHG2Lg }}
+      TELEGRAM_CHAT_ID: ${{ secrets.5686601804 }}
+    steps:
+      # 恢复失败计数缓存
+      - name: Restore fail counts
+        uses: actions/cache@v4
+        with:
+          path: fail_counts.txt
+          key: fail-counts
+
+      - name: Ping All URLs
+        run: |
+          URLS=(
+            "https://nezha-cheat0916.koyeb.app/"
+            "https://151515.com/"
+          )
+
+          # 如果缓存文件不存在则创建
+          if [ ! -f fail_counts.txt ]; then
+            > fail_counts.txt
+          fi
+
+          # 将失败次数加载到关联数组
+          declare -A FAIL_COUNTS
+          while IFS=" " read -r url count; do
+            FAIL_COUNTS["$url"]=$count
+          done < fail_counts.txt
+
+          IS_DAILY_REPORT=false
+          if [ "$(date -u +%H:%M)" == "00:00" ]; then
+            IS_DAILY_REPORT=true
+          fi
+
+          REPORT="📋 *每日健康简报*\n时间: $(date '+%Y-%m-%d %H:%M:%S')\n\n"
+
+          for url in "${URLS[@]}"; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+            
+            # 第一次失败则重试
+            if [ "$STATUS" != "200" ]; then
+              sleep 5
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+            fi
+
+            if [ "$STATUS" != "200" ]; then
+              FAIL_COUNTS["$url"]=$(( ${FAIL_COUNTS["$url"]:-0} + 1 ))
+              echo "❌ $url failed (${FAIL_COUNTS["$url"]} times in a row)"
+              
+              if [ "$FAIL_COUNTS" -ge 3 ] && [ "$IS_DAILY_REPORT" = false ]; then
+                MESSAGE="⚠️ 保活失败（连续 ${FAIL_COUNTS["$url"]} 次）\nURL: $url\n状态码: $STATUS\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
+                curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                     -d chat_id="${TELEGRAM_CHAT_ID}" \
+                     -d text="$MESSAGE" \
+                     -d parse_mode="Markdown"
+              fi
+              REPORT+="❌ $url  (状态码: $STATUS, 连续失败 ${FAIL_COUNTS["$url"]} 次)\n"
+            else
+              FAIL_COUNTS["$url"]=0
+              echo "✅ $url is UP"
+              REPORT+="✅ $url  (状态码: $STATUS)\n"
+            fi
+          done
+
+          # 保存失败次数
+          > fail_counts.txt
+          for url in "${!FAIL_COUNTS[@]}"; do
+            echo "$url ${FAIL_COUNTS["$url"]}" >> fail_counts.txt
+          done
+
+          # 每日简报
+          if [ "$IS_DAILY_REPORT" = true ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                 -d chat_id="${TELEGRAM_CHAT_ID}" \
+                 -d text="$REPORT" \
+                 -d parse_mode="Markdown"
+          fi
+
+      # 保存最新缓存
+      - name: Save fail counts
+        uses: actions/cache@v4
+        with:
+          path: fail_counts.txt
+          key: fail-counts
