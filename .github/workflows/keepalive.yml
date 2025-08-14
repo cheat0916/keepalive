@@ -12,8 +12,8 @@ jobs:
   keepalive:
     runs-on: ubuntu-latest
     env:
-      TELEGRAM_BOT_TOKEN: ${{ secrets.6154852677:AAEu7a7zBoWghrybfjAv9gupBFC1TLHG2Lg }}
-      TELEGRAM_CHAT_ID: ${{ secrets.5686601804 }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       # 恢复失败计数缓存
       - name: Restore fail counts
