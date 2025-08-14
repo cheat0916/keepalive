@@ -26,7 +26,8 @@ jobs:
         run: |
           URLS=(
             "https://nezha-cheat0916.koyeb.app/"
-            "https://151515.com/"
+            "https://example1.com/"
+            "https://example2.com/"
           )
 
           # 如果缓存文件不存在则创建
@@ -48,19 +49,20 @@ jobs:
           REPORT="📋 *每日健康简报*\n时间: $(date '+%Y-%m-%d %H:%M:%S')\n\n"
 
           for url in "${URLS[@]}"; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+            # 使用 curl || echo "000" 避免非零退出码
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "000")
             
-            # 第一次失败则重试
+            # 第一次失败则重试一次
             if [ "$STATUS" != "200" ]; then
               sleep 5
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "000")
             fi
 
             if [ "$STATUS" != "200" ]; then
               FAIL_COUNTS["$url"]=$(( ${FAIL_COUNTS["$url"]:-0} + 1 ))
               echo "❌ $url failed (${FAIL_COUNTS["$url"]} times in a row)"
               
-              if [ "$FAIL_COUNTS" -ge 3 ] && [ "$IS_DAILY_REPORT" = false ]; then
+              if [ "${FAIL_COUNTS["$url"]}" -ge 3 ] && [ "$IS_DAILY_REPORT" = false ]; then
                 MESSAGE="⚠️ 保活失败（连续 ${FAIL_COUNTS["$url"]} 次）\nURL: $url\n状态码: $STATUS\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
                 curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
                      -d chat_id="${TELEGRAM_CHAT_ID}" \
