@@ -25,15 +25,18 @@ jobs:
       - name: Ping All URLs
         shell: bash
         run: |
+          set +e   # 关闭非零退出码强制终止
+
           # --- 维护 URL 列表，新增/删除只需改这里 ---
           URLS="https://nezha-cheat0916.koyeb.app/ https://151515.com/"
 
+          # 如果缓存文件不存在则创建
           if [ ! -f fail_counts.txt ]; then
             > fail_counts.txt
           fi
 
           declare -A FAIL_COUNTS
-          while read -r url count; do
+          while IFS=" " read -r url count; do
             FAIL_COUNTS["$url"]=$count
           done < fail_counts.txt
 
@@ -79,11 +82,13 @@ jobs:
             fi
           done
 
+          # 保存失败次数
           > fail_counts.txt
-          for url in "${!FAIL_COUNTS[@]}"; do
+          for url in $URLS; do
             echo "$url ${FAIL_COUNTS["$url"]}" >> fail_counts.txt
           done
 
+          # 每日简报
           if [ "$IS_DAILY_REPORT" = true ]; then
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
                  -d chat_id="${TELEGRAM_CHAT_ID}" \
