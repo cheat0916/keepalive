@@ -21,7 +21,6 @@ jobs:
           # 在这里添加你要保活的 URL
           URLS=(
             "https://nezha-cheat0916.koyeb.app/"
-            "https://151515.com/"
             # "https://another-url.com/" # 可以随时添加
           )
 
