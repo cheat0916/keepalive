@@ -2,7 +2,7 @@ name: Keepalive
 
 on:
   schedule:
-    - cron: '*/10 * * * *' # 每 10 分钟运行一次
+    - cron: '*/15 * * * *' # 每 15 分钟运行一次
   workflow_dispatch: # 可支持手动触发
 
 jobs:
