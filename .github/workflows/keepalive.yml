@@ -95,7 +95,7 @@ jobs:
             fi
           }
 
-          # 使用 & 并行调用，并限制并发数量
+          # 并行检测 URL
           semaphores=0
           for url in "${URLS[@]}"; do
             check_url "$url" &
@@ -107,28 +107,34 @@ jobs:
           done
           wait
 
+          # 保存 fail_counts
           > "$FAIL_FILE"
           for url in "${!FAIL_COUNTS[@]}"; do
             printf "%s %d %d\n" "$url" "${FAIL_COUNTS[$url]}" "$NOW" >> "$FAIL_FILE"
           done
 
+          # 发送失败提醒（Telegram 出错不影响脚本）
           if [ ${#FAIL_MESSAGES[@]} -gt 0 ]; then
             REMAINING=$((FAIL_COUNT - MAX_FAIL_MSG))
             MSG_TEXT=$(printf "%s\n\n" "${FAIL_MESSAGES[@]}")
-            if [ $REMAINING -gt 0 ]; then
-              MSG_TEXT+="...还有 $REMAINING 条失败未显示"
-            fi
+            [ $REMAINING -gt 0 ] && MSG_TEXT+="...还有 $REMAINING 条失败未显示"
+            set +e
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               -d chat_id="${TELEGRAM_CHAT_ID}" \
               -d text="$MSG_TEXT" \
               -d parse_mode="Markdown"
+            set -e
           fi
 
+          # 发送每日健康报告（Telegram 出错不影响脚本）
           if [ "$IS_DAILY_REPORT" = true ]; then
+            set +e
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               -d chat_id="${TELEGRAM_CHAT_ID}" \
               -d text="$REPORT" \
               -d parse_mode="Markdown"
+            set -e
+          fi
 
       - name: Save fail_counts cache
         uses: actions/cache@v3
