@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -e
+
+# URL 列表
+URLS=(
+  "https://nezha-cheat0916.koyeb.app/"
+  # 可添加更多 URL
+)
+
+MAX_RETRY=2
+FAIL_FILE="fail_counts.txt"
+LAST_REPORT_FILE=".last_daily_report"
+DAYS_KEEP=7
+PARALLEL=5
+MAX_FAIL_MSG=5
+
+[ -f "$FAIL_FILE" ] || > "$FAIL_FILE"
+[ -f "$LAST_REPORT_FILE" ] || > "$LAST_REPORT_FILE"
+
+NOW=$(date +%s)
+TODAY=$(date '+%Y-%m-%d')
+
+declare -A FAIL_COUNTS
+while IFS=" " read -r url count timestamp; do
+  timestamp=${timestamp:-$NOW}
+  DIFF=$(( (NOW - timestamp) / 86400 ))
+  [ $DIFF -le $DAYS_KEEP ] && FAIL_COUNTS["$url"]=$count
+done < "$FAIL_FILE"
+
+IS_DAILY_REPORT=false
+HOUR_BEIJING=$(( $(date -u +%H) + 8 ))
+LAST_SENT=$(cat "$LAST_REPORT_FILE" 2>/dev/null || echo "")
+if [ $HOUR_BEIJING -ge 9 ] && [ $HOUR_BEIJING -le 11 ] && [ "$LAST_SENT" != "$TODAY" ]; then
+  IS_DAILY_REPORT=true
+  echo "$TODAY" > "$LAST_REPORT_FILE"
+fi
+
+REPORT="📋 *每日健康简报*\n时间: $(date '+%Y-%m-%d %H:%M:%S')\n\n"
+FAIL_MESSAGES=()
+FAIL_COUNT=0
+
+check_url() {
+  local url="$1"
+  local status
+  local retry=0
+  status=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+  while [ "$status" != "200" ] && [ $retry -lt $MAX_RETRY ]; do
+    sleep 5
+    status=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+    ((retry++))
+  done
+
+  if [ "$status" != "200" ]; then
+    FAIL_COUNTS["$url"]=$(( ${FAIL_COUNTS["$url"]:-0} + 1 ))
+    echo "❌ $url failed (${FAIL_COUNTS["$url"]} 次连续失败)"
+    REPORT+="❌ $url  (状态码: $status, 连续失败 ${FAIL_COUNTS["$url"]} 次)\n"
+
+    if [ "${FAIL_COUNTS["$url"]}" -ge 3 ] && [ "$IS_DAILY_REPORT" = false ]; then
+      ((FAIL_COUNT++))
+      if [ $FAIL_COUNT -le $MAX_FAIL_MSG ]; then
+        FAIL_MESSAGES+=("⚠️ 保活失败（连续 ${FAIL_COUNTS["$url"]} 次）\nURL: $url\n状态码: $status\n时间: $(date '+%Y-%m-%d %H:%M:%S')")
+      fi
+    fi
+  else
+    FAIL_COUNTS["$url"]=0
+    echo "✅ $url is UP"
+    REPORT+="✅ $url  (状态码: $status)\n"
+  fi
+}
+
+# 并行检测 URL
+semaphores=0
+for url in "${URLS[@]}"; do
+  check_url "$url" &
+  ((semaphores++))
+  if [ $semaphores -ge $PARALLEL ]; then
+    wait
+    semaphores=0
+  fi
+done
+wait
+
+# 保存 fail_counts
+> "$FAIL_FILE"
+for url in "${!FAIL_COUNTS[@]}"; do
+  printf "%s %d %d\n" "$url" "${FAIL_COUNTS[$url]}" "$NOW" >> "$FAIL_FILE"
+done
+
+# 发送失败提醒
+if [ ${#FAIL_MESSAGES[@]} -gt 0 ]; then
+  REMAINING=$((FAIL_COUNT - MAX_FAIL_MSG))
+  MSG_TEXT=$(printf "%s\n\n" "${FAIL_MESSAGES[@]}")
+  [ $REMAINING -gt 0 ] && MSG_TEXT+="...还有 $REMAINING 条失败未显示"
+  set +e
+  curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -d chat_id="${TELEGRAM_CHAT_ID}" \
+    -d text="$MSG_TEXT" \
+    -d parse_mode="Markdown"
+  set -e
+fi
+
+# 发送每日健康报告
+if [ "$IS_DAILY_REPORT" = true ]; then
+  set +e
+  curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -d chat_id="${TELEGRAM_CHAT_ID}" \
+    -d text="$REPORT" \
+    -d parse_mode="Markdown"
+  set -e
+fi
