@@ -2,8 +2,8 @@ name: Keepalive
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # 每 15 分钟运行一次
-  workflow_dispatch: # 可支持手动触发
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 jobs:
   keepalive:
@@ -11,6 +11,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+
+      - name: Cache fail counts
+        id: cache-fail
+        uses: actions/cache@v3
+        with:
+          path: fail_counts.txt
+          key: fail-counts-${{ runner.os }}-v1
 
       - name: Run Keepalive script
         env:
@@ -21,85 +28,61 @@ jobs:
 
           URLS=(
             "https://nezha-cheat0916.koyeb.app/"
-            # 可以添加更多 URL
           )
 
           MAX_RETRY=2
           FAIL_FILE="fail_counts.txt"
+          LAST_REPORT_FILE=".last_daily_report"
           DAYS_KEEP=7
+          PARALLEL=5  # 并行数量
 
-          # 如果缓存文件不存在则创建
-          if [ ! -f "$FAIL_FILE" ]; then
-            > "$FAIL_FILE"
-          fi
+          [ -f "$FAIL_FILE" ] || > "$FAIL_FILE"
+          [ -f "$LAST_REPORT_FILE" ] || > "$LAST_REPORT_FILE"
 
-          # 当前时间戳
           NOW=$(date +%s)
+          TODAY=$(date '+%Y-%m-%d')
 
-          # 将失败次数加载到关联数组，只保留最近 7 天内的记录
           declare -A FAIL_COUNTS
           while IFS=" " read -r url count timestamp; do
-            if [ -z "$timestamp" ]; then
-              timestamp=$NOW
-            fi
+            timestamp=${timestamp:-$NOW}
             DIFF=$(( (NOW - timestamp) / 86400 ))
-            if [ $DIFF -le $DAYS_KEEP ]; then
-              FAIL_COUNTS["$url"]=$count
-            fi
+            [ $DIFF -le $DAYS_KEEP ] && FAIL_COUNTS["$url"]=$count
           done < "$FAIL_FILE"
 
-          # 判断是否生成每日报告（中国时间 10:00 对应 UTC 02:00）
           IS_DAILY_REPORT=false
-          if [ "$(date -u +%H:%M)" == "02:00" ]; then
-            IS_DAILY_REPORT=true
-          fi
+          HOUR_BEIJING=$(( $(date -u +%H) + 8 ))  # UTC -> 北京时间
+          [ $HOUR_BEIJING -ge 9 ] && [ $HOUR_BEIJING -le 11 ] && LAST_SENT=$(cat "$LAST_REPORT_FILE" 2>/dev/null || echo "") && [ "$LAST_SENT" != "$TODAY" ] && IS_DAILY_REPORT=true && echo "$TODAY" > "$LAST_REPORT_FILE"
 
           REPORT="📋 *每日健康简报*\n时间: $(date '+%Y-%m-%d %H:%M:%S')\n\n"
 
-          # 并发检查每个 URL
-          for url in "${URLS[@]}"; do
-          (
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$url")
-            RETRY=0
-            while [ "$STATUS" != "200" ] && [ $RETRY -lt $MAX_RETRY ]; do
+          check_url() {
+            local url="$1"
+            local status
+            local retry=0
+            status=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+            while [ "$status" != "200" ] && [ $retry -lt $MAX_RETRY ]; do
               sleep 5
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$url")
-              ((RETRY++))
+              status=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+              ((retry++))
             done
 
-            if [ "$STATUS" != "200" ]; then
+            if [ "$status" != "200" ]; then
               FAIL_COUNTS["$url"]=$(( ${FAIL_COUNTS["$url"]:-0} + 1 ))
               echo "❌ $url failed (${FAIL_COUNTS["$url"]} times in a row)"
-
-              # Telegram 失败提醒（非日报）
-              if [ "${FAIL_COUNTS["$url"]}" -ge 3 ] && [ "$IS_DAILY_REPORT" = false ]; then
-                MESSAGE="⚠️ 保活失败（连续 ${FAIL_COUNTS["$url"]} 次）\nURL: $url\n状态码: $STATUS\n时间: $(date '+%Y-%m-%d %H:%M:%S')"
-                curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-                  -d chat_id="${TELEGRAM_CHAT_ID}" \
-                  -d text="$MESSAGE" \
-                  -d parse_mode="Markdown"
-              fi
-
-              REPORT+="❌ $url  (状态码: $STATUS, 连续失败 ${FAIL_COUNTS["$url"]} 次)\n"
+              [ "${FAIL_COUNTS["$url"]}" -ge 3 ] && [ "$IS_DAILY_REPORT" = false ] && curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="⚠️ 保活失败（连续 ${FAIL_COUNTS["$url"]} 次）\nURL: $url\n状态码: $status\n时间: $(date '+%Y-%m-%d %H:%M:%S')" -d parse_mode="Markdown"
+              REPORT+="❌ $url  (状态码: $status, 连续失败 ${FAIL_COUNTS["$url"]} 次)\n"
             else
               FAIL_COUNTS["$url"]=0
               echo "✅ $url is UP"
-              REPORT+="✅ $url  (状态码: $STATUS)\n"
+              REPORT+="✅ $url  (状态码: $status)\n"
             fi
-          ) &
-          done
-          wait
+          }
 
-          # 保存失败次数和时间戳
+          printf "%s\n" "${URLS[@]}" | xargs -n1 -P $PARALLEL -I {} bash -c 'check_url "$@"' _ {}
+
           > "$FAIL_FILE"
           for url in "${!FAIL_COUNTS[@]}"; do
             printf "%s %d %d\n" "$url" "${FAIL_COUNTS[$url]}" "$NOW" >> "$FAIL_FILE"
           done
 
-          # 每日简报发送
-          if [ "$IS_DAILY_REPORT" = true ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              -d chat_id="${TELEGRAM_CHAT_ID}" \
-              -d text="$REPORT" \
-              -d parse_mode="Markdown"
-          fi
+          [ "$IS_DAILY_REPORT" = true ] && curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="$REPORT" -d parse_mode="Markdown"
